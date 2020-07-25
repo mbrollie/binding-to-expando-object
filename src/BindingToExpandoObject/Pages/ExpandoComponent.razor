@@ -1,0 +1,225 @@
+﻿@page "/expando"
+
+@using System;
+@using System.Collections.Generic;
+@using System.Data;
+@using System.Data.SqlClient;
+@using System.Dynamic;
+@using System.Linq;
+@using System.Threading.Tasks;
+@using Microsoft.Extensions.Configuration;
+
+@inject IConfiguration Configuration
+
+<TelerikGrid Data="@GridData"
+             Pageable="true"
+             Sortable="true"
+             Groupable="true"
+             FilterMode="@GridFilterMode.FilterMenu"
+             EditMode="GridEditMode.Inline"
+             OnCreate="@CreateHandler"
+             OnUpdate="@UpdateHandler">
+    <GridToolBar>
+        <GridCommandButton Command="Add" Icon="add">Add</GridCommandButton>
+    </GridToolBar>
+    <GridColumns>
+        @if (GridData != null && GridData.Any())
+        {
+            // this sample uses the first data item to create columns for all keys present in it
+            // which assumes all items have the same keys in them. If this is not your case
+            // you may want to create your own list of column descriptors or any other logic to define the columns
+
+            var firstItem = GridData.First();
+            var dictionaryItem = (IDictionary<string, object>)firstItem;
+
+            var fields = dictionaryItem.Keys;
+
+            foreach (var item in dictionaryItem)
+            {
+                <GridColumn Field="@item.Key" FieldType="@item.Value?.GetType()" Editable="@(item.Key != ColumnKey)"></GridColumn>
+            }
+            <GridCommandColumn>
+                <GridCommandButton Command="Edit" Icon="edit">Edit</GridCommandButton>
+                <GridCommandButton Command="Save" Icon="save" ShowInEdit="true">Update</GridCommandButton>
+                <GridCommandButton Command="Delete" Icon="delete">Delete</GridCommandButton>
+                <GridCommandButton Command="Cancel" Icon="cancel" ShowInEdit="true">Cancel</GridCommandButton>
+            </GridCommandColumn>
+        }
+    </GridColumns>
+</TelerikGrid>
+
+@code {
+
+    [Parameter] public string TableName { get; set; } = "Employee";
+    [Parameter] public string ColumnKey { get; set; } = "EmployeeId";
+    [Parameter] public bool IdentityIncrement { get; set; } = false;
+
+    private List<ExpandoObject> GridData { get; set; }
+    private int ColumnValue { get; set; } = 1;
+
+    protected override async Task OnInitializedAsync()
+    {
+        GridData = GetData().ToList();
+    }
+
+    private async Task CreateHandler(GridCommandEventArgs args)
+    {
+        var model = (ExpandoObject)args.Item;
+
+        // When the values are not set in the Grid columns, we receive the ExpandoObject without fields.
+        // We need to handle setting default values by ourself
+        var firstItem = GridData.First();
+        var defaultItems = (IDictionary<string, object>)firstItem;
+        var columns = new Dictionary<string, object>(defaultItems);
+        var columnsChanged = (IDictionary<string, object>)model;
+
+        foreach (var item in defaultItems)
+        {
+            if (ColumnKey == item.Key)
+            {
+                var data = (IEnumerable<IDictionary<string, object>>)GridData;
+                var id = data.Max(d => ((IDictionary<string, object>)d)[ColumnKey]);
+
+                columns[item.Key] = (int)id + 1;
+            }
+            else
+            {
+                if (!columnsChanged.ContainsKey(item.Key))
+                {
+                    dynamic defaultValue = item.Value.GetType().Name switch
+                    {
+                        nameof(String) => string.Empty,
+                        nameof(Boolean) => false,
+                        nameof(DateTime) => DateTime.UtcNow,
+                        _ => 0
+                    };
+
+                    columns[item.Key] = defaultValue;
+                }
+                else
+                    columns[item.Key] = columnsChanged[item.Key];
+            }
+        }
+
+        model = columns.ToExpando();
+
+        GridData.Insert(0, model);
+
+        await Add(model);
+    }
+
+    private async Task UpdateHandler(GridCommandEventArgs args)
+    {
+        var model = (ExpandoObject)args.Item;
+
+        var dictionaryItem = (IDictionary<string, object>)model;
+
+        var matchingItem = GridData.FirstOrDefault(itm => ((IDictionary<string, object>)itm)[ColumnKey] == ((IDictionary<string, object>)model)[ColumnKey]);
+
+        foreach (var item in dictionaryItem)
+        {
+            (matchingItem as IDictionary<string, object>)[item.Key] = item.Value;
+
+            if (ColumnKey == item.Key)
+            {
+                ColumnValue = (int)item.Value;
+            }
+        }
+
+        await Update(model);
+    }
+
+    private void SetExpandoDefaultValue<T>(ExpandoObject model, string key, T value)
+    {
+        if (!(model as IDictionary<string, object>).ContainsKey(key))
+        {
+            (model as IDictionary<string, object>)[key] = value;
+        }
+    }
+
+    private IEnumerable<ExpandoObject> GetData()
+    {
+        using (var connection = new SqlConnection(Configuration.GetConnectionString("DefaultConnection")))
+        {
+            var commandText = $"SELECT * FROM {TableName}";
+            using (var command = new SqlCommand(commandText, connection))
+            {
+                if (connection.State == ConnectionState.Closed)
+                    connection.Open();
+
+                using (var reader = command.ExecuteReader())
+                {
+                    while (reader.Read())
+                    {
+                        yield return GetDynamicData(reader);
+                    }
+                }
+            }
+        }
+    }
+
+    private dynamic GetDynamicData(SqlDataReader reader)
+    {
+        var expandoObject = new ExpandoObject() as IDictionary<string, object>;
+        for (int i = 0; i < reader.FieldCount; i++)
+        {
+            expandoObject.Add(reader.GetName(i), reader[i]);
+        }
+        return expandoObject;
+    }
+
+    private async Task<bool> Add(ExpandoObject model)
+    {
+        var dictionaryItem = (IDictionary<string, object>)model;
+        var cloneItem = new Dictionary<string, object>(dictionaryItem);
+
+        if (IdentityIncrement)
+            cloneItem.Remove(ColumnKey);
+
+        var fields = string.Join(",", cloneItem.Keys.Select(field => $"[{field}]"));
+        var values = string.Join(",", cloneItem.Values.Select(value => $"'{(value?.GetType() == typeof(DateTime) ? string.Format("{0:yyyy-MM-dd}", value) : value)}'"));
+
+        string sql = $"INSERT INTO {TableName} ({fields}) VALUES ({values})";
+
+        try
+        {
+            using var connection = new SqlConnection(Configuration.GetConnectionString("DefaultConnection"));
+            if (connection.State == ConnectionState.Closed)
+                await connection.OpenAsync();
+
+            using var cmd = new SqlCommand(sql, connection);
+            int affectedRows = cmd.ExecuteNonQuery();
+
+            return affectedRows > 0;
+        }
+        catch (SqlException ex)
+        {
+            return false;
+        }
+    }
+
+    public async Task<bool> Update(ExpandoObject model)
+    {
+        var dictionaryItem = (IDictionary<string, object>)model;
+        dictionaryItem.Remove(ColumnKey);
+
+        var fields = string.Join(",", dictionaryItem.Select(i => $"[{i.Key}]='{(i.Value?.GetType() == typeof(DateTime) ? string.Format("{0:yyyy-MM-dd}", i.Value) : i.Value)}'"));
+        string sql = $"UPDATE {TableName} SET {fields} WHERE {ColumnKey} = {ColumnValue}";
+
+        try
+        {
+            using var connection = new SqlConnection(Configuration.GetConnectionString("DefaultConnection"));
+            if (connection.State == ConnectionState.Closed)
+                await connection.OpenAsync();
+
+            using var cmd = new SqlCommand(sql, connection);
+            int affectedRows = cmd.ExecuteNonQuery();
+
+            return affectedRows > 0;
+        }
+        catch (Exception ex)
+        {
+            return false;
+        }
+    }
+}

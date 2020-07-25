@@ -1,0 +1,86 @@
+﻿@page "/auto-generated-columns"
+
+@using System.Dynamic;
+
+@inject EmployeeService EmployeeService
+
+    <TelerikGrid Data="@GridData"
+                 Pageable="true"
+                 Sortable="true"
+                 Groupable="true"
+                 FilterMode="@GridFilterMode.FilterMenu" 
+                 EditMode="GridEditMode.Inline"
+                 OnCreate="@CreateHandler">
+        <GridToolBar>
+            <GridCommandButton Command="Add" Icon="add">Add Employee</GridCommandButton>
+        </GridToolBar>
+        <GridColumns>
+            @if (GridData != null && GridData.Any())
+            {
+                // this sample uses the first data item to create columns for all keys present in it
+                // which assumes all items have the same keys in them. If this is not your case
+                // you may want to create your own list of column descriptors or any other logic to define the columns
+
+                var firstItem = GridData.First();
+                var dictionaryItem = (IDictionary<string, object>)firstItem;
+
+                var fields = dictionaryItem.Keys;
+
+                foreach (var item in dictionaryItem)
+                {
+                    <GridColumn Field="@item.Key" FieldType="@item.Value.GetType()" Editable="true"></GridColumn>
+                }
+                <GridCommandColumn>
+                    <GridCommandButton Command="Edit" Icon="edit">Edit</GridCommandButton>
+                    <GridCommandButton Command="Save" Icon="save" ShowInEdit="true">Update</GridCommandButton>
+                    <GridCommandButton Command="Delete" Icon="delete">Delete</GridCommandButton>
+                    <GridCommandButton Command="Cancel" Icon="cancel" ShowInEdit="true">Cancel</GridCommandButton>
+                </GridCommandColumn>
+            }
+        </GridColumns>
+    </TelerikGrid>
+
+@code { 
+    public List<ExpandoObject> GridData { get; set; }
+
+    protected override async Task OnInitializedAsync()
+    {
+        GridData = await EmployeeService.GetEmployeesAsync();
+    }
+
+    // for sample CUD operations, see the main sample with the explicitly defined columns
+    public void CreateHandler(GridCommandEventArgs args)
+    {
+        var model = (ExpandoObject)args.Item;
+        //((dynamic)model).EmployeeId = GridData.Count() + 1;
+        string columnId = "EmployeeId";
+
+        // When the values are not set in the Grid columns, we receive the ExpandoObject without fields.
+        // We need to handle setting default values by ourself
+        var dictionaryItem = (IDictionary<string, object>)model;
+        foreach (var item in dictionaryItem)
+        {
+            SetExpandoDefaultValue(model, item.Key, item.Value.GetType());
+
+            //if(columnId == item.Key)
+            //{
+            //    (model as IDictionary<string, object>)[item.Key] = GridData.Count() + 1;
+            //}
+        }
+
+        GridData.Insert(0, model);
+
+        EmployeeService.Add(model);
+
+    }
+
+    public void SetExpandoDefaultValue<T>(ExpandoObject model, string key, T value)
+    {
+        if (!(model as IDictionary<string, object>).ContainsKey(key))
+        {
+            (model as IDictionary<string, object>)[key] = value;
+        }
+    }
+}
+
+
